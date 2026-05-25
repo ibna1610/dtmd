@@ -41,18 +41,151 @@ function buildHeartPath(cx, cy, scale) {
   for (var i = 0; i <= 200; i++) {
     var t = -Math.PI + (i / 200) * Math.PI * 2;
     var p = heartXY(t);
-    var x = cx + p.x * scale;
-    var y = cy + p.y * scale;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    if (i === 0) ctx.moveTo(cx + p.x * scale, cy + p.y * scale);
+    else         ctx.lineTo(cx + p.x * scale, cy + p.y * scale);
   }
   ctx.closePath();
 }
 
-// ── 2D Particles ──────────────────────────────────────────────
+// ── Particle images ───────────────────────────────────────────
+function makeHeartImage(size, color1, color2, color3) {
+  var c2 = document.createElement('canvas');
+  c2.width = c2.height = size;
+  var c = c2.getContext('2d');
+  function to(t) {
+    var px = 160 * Math.pow(Math.sin(t), 3);
+    var py = 130 * Math.cos(t) - 50*Math.cos(2*t) - 20*Math.cos(3*t) - 10*Math.cos(4*t) - 25;
+    return { x: size/2 + px*size/350, y: size/2 + py*size/350 };
+  }
+  c.beginPath();
+  var t = -Math.PI, pt = to(t);
+  c.moveTo(pt.x, pt.y);
+  while (t < Math.PI) { t += 0.01; pt = to(t); c.lineTo(pt.x, pt.y); }
+  c.closePath();
+  var g = c.createRadialGradient(size*0.4, size*0.35, 0, size/2, size/2, size*0.6);
+  g.addColorStop(0,   color1);
+  g.addColorStop(0.5, color2);
+  g.addColorStop(1,   color3);
+  c.fillStyle = g;
+  c.fill();
+  var img = new Image();
+  img.src = c2.toDataURL();
+  return img;
+}
+
+// ── Generic Particle Pool factory ────────────────────────────
+function makePool(poolSize, duration, effect) {
+  var pool = new Array(poolSize);
+  for (var i = 0; i < poolSize; i++) pool[i] = {
+    px:0, py:0, vx:0, vy:0, ax:0, ay:0, age:0
+  };
+  var fa = 0, ff = 0;
+  return {
+    dur: duration, eff: effect, size: poolSize,
+    fa: function(){ return fa; },
+    add: function(x, y, dx, dy) {
+      var p = pool[ff];
+      p.px=x; p.py=y; p.vx=dx; p.vy=dy;
+      p.ax=dx*effect; p.ay=dy*effect; p.age=0;
+      ff=(ff+1)%poolSize;
+      if(fa===ff) fa=(fa+1)%poolSize;
+    },
+    update: function(dt) {
+      var i, p;
+      if(fa<ff){ for(i=fa;i<ff;i++){ p=pool[i]; p.px+=p.vx*dt; p.py+=p.vy*dt; p.vx+=p.ax*dt; p.vy+=p.ay*dt; p.age+=dt; }}
+      else if(ff<fa){
+        for(i=fa;i<poolSize;i++){ p=pool[i]; p.px+=p.vx*dt; p.py+=p.vy*dt; p.vx+=p.ax*dt; p.vy+=p.ay*dt; p.age+=dt; }
+        for(i=0;i<ff;i++){        p=pool[i]; p.px+=p.vx*dt; p.py+=p.vy*dt; p.vx+=p.ax*dt; p.vy+=p.ay*dt; p.age+=dt; }
+      }
+      while(fa!==ff && pool[fa].age>=duration){ fa=(fa+1)%poolSize; }
+    },
+    draw: function(img) {
+      function ease(t){ return --t*t*t+1; }
+      var i, p, sz, a;
+      function drawOne(p){
+        sz = img.width * ease(p.age/duration);
+        a  = Math.max(0, 1 - p.age/duration);
+        ctx.globalAlpha = a;
+        ctx.drawImage(img, p.px-sz/2, p.py-sz/2, sz, sz);
+      }
+      if(fa<ff){ for(i=fa;i<ff;i++) drawOne(pool[i]); }
+      else if(ff<fa){
+        for(i=fa;i<poolSize;i++) drawOne(pool[i]);
+        for(i=0;i<ff;i++)        drawOne(pool[i]);
+      }
+      ctx.globalAlpha=1;
+    }
+  };
+}
+
+// Pool A — bùng nổ ra ngoài (effect -0.6, hạt trái tim hồng đậm)
+var PART_SIZE   = 14;
+var poolOut     = makePool(3000, 2.5, -0.6);
+var poolOutRate = 3000 / 2.5;
+
+// Pool B — hút vào trong (effect -1.3, hạt trái tim hồng nhạt)
+var PART_SIZE_B = 13;
+var poolIn      = makePool(2000, 2.0, -1.3);
+var poolInRate  = 2000 / 2.0;
+
+// ── Border particles (viền trái tim) ─────────────────────────
+var BORDER_COUNT = 220; // số hạt trên viền
+var borderParticles = [];
+
+function BorderParticle(index) {
+  this.index  = index;                          // vị trí cố định trên viền (0..1)
+  this.offset = (Math.random() - 0.5) * 0.012; // lệch nhỏ để không đều
+  this.twinkle = Math.random() * Math.PI * 2;
+  this.twSpd   = 0.04 + Math.random() * 0.06;
+  this.size    = 1.8 + Math.random() * 2.2;
+  this.drift   = (Math.random() - 0.5) * 0.008; // trôi nhẹ theo viền
+  // màu xen kẽ hồng / tím / trắng
+  var palette = ['#ff4d94','#ff9de2','#ffffff','#c850c0','#ffb3ec','#ff6eb4','#e040fb'];
+  this.color  = palette[Math.floor(Math.random() * palette.length)];
+}
+BorderParticle.prototype.update = function() {
+  this.twinkle += this.twSpd;
+  this.index   += this.drift * 0.001;
+  if (this.index > 1) this.index -= 1;
+  if (this.index < 0) this.index += 1;
+};
+BorderParticle.prototype.draw = function(cx, cy, sc) {
+  var t  = -Math.PI + (this.index + this.offset) * Math.PI * 2;
+  var p  = heartXY(t);
+  var x  = cx + p.x * sc;
+  var y  = cy + p.y * sc;
+  var flicker = 0.4 + 0.6 * Math.abs(Math.sin(this.twinkle));
+  var alpha   = 0.7 * flicker;
+
+  // hào quang mờ phía sau
+  ctx.globalAlpha = alpha * 0.3;
+  ctx.beginPath();
+  ctx.arc(x, y, this.size * 2.8, 0, Math.PI * 2);
+  ctx.fillStyle = this.color;
+  ctx.fill();
+
+  // hạt chính
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(x, y, this.size, 0, Math.PI * 2);
+  ctx.fillStyle = this.color;
+  ctx.fill();
+
+  ctx.globalAlpha = 1;
+};
+
+function initBorderParticles() {
+  borderParticles = [];
+  for (var i = 0; i < BORDER_COUNT; i++) {
+    borderParticles.push(new BorderParticle(i / BORDER_COUNT));
+  }
+}
+
+// ── 2D ambient particles ──────────────────────────────────────
 var PCOLORS = ['#ff6eb4','#ff9de2','#ff4d94','#c850c0','#ff85e1','#ffffff','#b44fff','#ffb3ec','#ff80c0'];
 
-function Particle() { this.reset(true); }
-Particle.prototype.reset = function(init) {
+function AmbParticle() { this.reset(true); }
+AmbParticle.prototype.reset = function(init) {
   var t  = Math.random() * Math.PI * 2 - Math.PI;
   var p  = heartXY(t);
   var cx = canvas.width  / 2;
@@ -74,10 +207,9 @@ Particle.prototype.reset = function(init) {
   this.twSpd    = 0.05 + Math.random() * 0.09;
   this.isStar   = Math.random() < 0.2;
 };
-Particle.prototype.update = function() {
+AmbParticle.prototype.update = function() {
   this.life++;
-  this.x += this.vx;
-  this.y += this.vy;
+  this.x += this.vx; this.y += this.vy;
   this.vy -= 0.007;
   this.twinkle += this.twSpd;
   var p = this.life / this.maxLife;
@@ -86,27 +218,21 @@ Particle.prototype.update = function() {
   else              this.alpha = this.maxAlpha;
   if (this.life >= this.maxLife) this.reset(false);
 };
-Particle.prototype.draw = function() {
+AmbParticle.prototype.draw = function() {
   var flicker = 0.6 + 0.4 * Math.sin(this.twinkle);
   ctx.globalAlpha = this.alpha * flicker;
   if (this.isStar) {
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.beginPath();
+    ctx.save(); ctx.translate(this.x, this.y); ctx.beginPath();
     for (var i = 0; i < 4; i++) {
-      var a = (i / 4) * Math.PI * 2;
-      ctx.moveTo(0, 0);
-      ctx.lineTo(Math.cos(a) * this.size * 1.8, Math.sin(a) * this.size * 1.8);
+      var a = (i/4) * Math.PI * 2;
+      ctx.moveTo(0,0);
+      ctx.lineTo(Math.cos(a)*this.size*1.8, Math.sin(a)*this.size*1.8);
     }
-    ctx.strokeStyle = this.color;
-    ctx.lineWidth   = 1.0;
-    ctx.stroke();
-    ctx.restore();
+    ctx.strokeStyle = this.color; ctx.lineWidth = 1; ctx.stroke(); ctx.restore();
   } else {
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.size * 2, 0, Math.PI * 2);
-    ctx.fillStyle = this.color;
-    ctx.fill();
+    ctx.fillStyle = this.color; ctx.fill();
   }
   ctx.globalAlpha = 1;
 };
@@ -114,10 +240,11 @@ Particle.prototype.draw = function() {
 // ── 3D Heart surface ──────────────────────────────────────────
 function heartSurface3D(t, s) {
   var sinT = Math.sin(t);
-  var x =  16 * sinT * sinT * sinT;
-  var y = -(13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t));
-  var z =   8 * Math.cos(s) * (1 - Math.abs(t) / Math.PI * 0.55);
-  return { x: x, y: y, z: z };
+  return {
+    x:  16 * sinT * sinT * sinT,
+    y: -(13 * Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t)),
+    z:   8 * Math.cos(s) * (1 - Math.abs(t) / Math.PI * 0.55)
+  };
 }
 
 var MCOLORS = [
@@ -157,9 +284,7 @@ Molecule.prototype.getPos = function(time) {
 function drawTinyHeart(cx, cy, size, r, g, b, alpha, angle) {
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.translate(cx, cy);
-  ctx.rotate(angle);
-  ctx.scale(size, size);
+  ctx.translate(cx, cy); ctx.rotate(angle); ctx.scale(size, size);
   ctx.beginPath();
   ctx.moveTo(0, 0.35);
   ctx.bezierCurveTo( 0,   0.1, -0.5,-0.3,-0.5,-0.05);
@@ -178,124 +303,151 @@ function drawTinyHeart(cx, cy, size, r, g, b, alpha, angle) {
   ctx.globalAlpha = 1;
 }
 
-// 3D helpers
-function rotY(p, a) {
-  return { x: p.x*Math.cos(a)+p.z*Math.sin(a), y: p.y, z: -p.x*Math.sin(a)+p.z*Math.cos(a) };
-}
-function rotX(p, a) {
-  return { x: p.x, y: p.y*Math.cos(a)-p.z*Math.sin(a), z: p.y*Math.sin(a)+p.z*Math.cos(a) };
-}
+function rotY(p, a) { return { x: p.x*Math.cos(a)+p.z*Math.sin(a), y: p.y, z: -p.x*Math.sin(a)+p.z*Math.cos(a) }; }
+function rotX(p, a) { return { x: p.x, y: p.y*Math.cos(a)-p.z*Math.sin(a), z: p.y*Math.sin(a)+p.z*Math.cos(a) }; }
 function project(p, cx, cy, scale, fov) {
-  var z = p.z + fov;
-  var f = fov / z;
+  var z = p.z + fov, f = fov / z;
   return { sx: cx + p.x*scale*f, sy: cy + p.y*scale*f, f: f };
 }
 
-// Input handling
+// ── Input ─────────────────────────────────────────────────────
 var isDragging=false, dragStartX=0, dragStartY=0;
 var manualRotY=0, manualRotX=0.28, targetRotY=0, targetRotX=0.28;
 var mouseX=0, mouseY=0;
 
 canvas.addEventListener('mousedown', function(e){ isDragging=true; dragStartX=e.clientX; dragStartY=e.clientY; });
 canvas.addEventListener('mousemove', function(e){
-  if(isDragging){
-    targetRotY+=(e.clientX-dragStartX)*0.005; targetRotX+=(e.clientY-dragStartY)*0.005;
-    dragStartX=e.clientX; dragStartY=e.clientY;
-  }
-  mouseX=(e.clientX/canvas.width-0.5)*2;
-  mouseY=(e.clientY/canvas.height-0.5)*2;
+  if(isDragging){ targetRotY+=(e.clientX-dragStartX)*0.005; targetRotX+=(e.clientY-dragStartY)*0.005; dragStartX=e.clientX; dragStartY=e.clientY; }
+  mouseX=(e.clientX/canvas.width-0.5)*2; mouseY=(e.clientY/canvas.height-0.5)*2;
 });
 canvas.addEventListener('mouseup',    function(){ isDragging=false; });
 canvas.addEventListener('mouseleave', function(){ isDragging=false; });
 canvas.addEventListener('touchstart', function(e){ e.preventDefault(); isDragging=true; dragStartX=e.touches[0].clientX; dragStartY=e.touches[0].clientY; }, {passive:false});
 canvas.addEventListener('touchmove',  function(e){ e.preventDefault();
-  if(isDragging){
-    targetRotY+=(e.touches[0].clientX-dragStartX)*0.005; targetRotX+=(e.touches[0].clientY-dragStartY)*0.005;
-    dragStartX=e.touches[0].clientX; dragStartY=e.touches[0].clientY;
-  }
+  if(isDragging){ targetRotY+=(e.touches[0].clientX-dragStartX)*0.005; targetRotX+=(e.touches[0].clientY-dragStartY)*0.005; dragStartX=e.touches[0].clientX; dragStartY=e.touches[0].clientY; }
 }, {passive:false});
 canvas.addEventListener('touchend', function(){ isDragging=false; });
 
 // ── State ─────────────────────────────────────────────────────
-var isMobile = getW() < 768;
-var PCOUNT   = isMobile ? 200 : 700;
-var MCOUNT   = isMobile ? 600 : 1800;
+var isMobile   = getW() < 768;
+var PCOUNT     = isMobile ? 150 : 500;
+var MCOUNT     = isMobile ? 500 : 1500;
 var particles  = [];
 var basePoints = [];
 var molecules  = [];
+var heartImgOut = null; // hồng đậm — bùng ra
+var heartImgIn  = null; // xanh nhạt/hồng nhạt — hút vào
 
 function initAll() {
   resize();
+  heartImgOut = makeHeartImage(PART_SIZE,   '#ffb3e6', '#ff3490', '#c0006e');
+  heartImgIn  = makeHeartImage(PART_SIZE_B, '#ffe0f0', '#FF5CA4', '#ff1a6e');
 
   particles = [];
-  for (var i = 0; i < PCOUNT; i++) particles.push(new Particle());
+  for (var i = 0; i < PCOUNT; i++) particles.push(new AmbParticle());
 
   basePoints = [];
   for (var i = 0; i < MCOUNT; i++) {
     var t = -Math.PI + Math.random() * Math.PI * 2;
     var s = -Math.PI + Math.random() * Math.PI * 2;
     var p = heartSurface3D(t, s);
-    basePoints.push({
-      bx: p.x + (Math.random()-0.5)*0.22,
-      by: p.y + (Math.random()-0.5)*0.22,
-      bz: p.z + (Math.random()-0.5)*0.22
-    });
+    basePoints.push({ bx: p.x+(Math.random()-0.5)*0.22, by: p.y+(Math.random()-0.5)*0.22, bz: p.z+(Math.random()-0.5)*0.22 });
   }
 
   molecules = [];
   for (var i = 0; i < MCOUNT; i++) molecules.push(new Molecule(i));
+
+  initBorderParticles();
 }
 
 // ── Main loop ─────────────────────────────────────────────────
 var time=0, autoRotY=0, lastTs=0;
+// pulse cho heartbeat animation
+var pulseScale = 1, pulseDir = 1;
 
 function render(ts) {
   requestAnimationFrame(render);
-
-  var dt = ts - lastTs;
-  lastTs = ts;
-  // clamp delta để tránh jump khi tab bị ẩn
+  var dt = ts - lastTs; lastTs = ts;
   if (dt > 100 || dt <= 0) dt = 16;
-  time += dt * 0.001;
+  var dtSec = dt * 0.001;
+  time += dtSec;
+
+  // heartbeat pulse
+  pulseScale += pulseDir * dtSec * 0.18;
+  if (pulseScale > 1.08) pulseDir = -1;
+  if (pulseScale < 0.96) pulseDir =  1;
 
   if (!isDragging) autoRotY += 0.004;
   manualRotY += (targetRotY - manualRotY) * 0.08;
   manualRotX += (targetRotX - manualRotX) * 0.08;
 
-  var rY    = autoRotY + manualRotY + mouseX * 0.2;
-  var rX    = manualRotX + mouseY * 0.1;
-  var cx    = canvas.width  / 2;
-  var cy    = canvas.height / 2 + 10;
-  var pulse = 1 + 0.05 * Math.sin(time * 2.1);
-  var sc2d  = Math.min(canvas.width, canvas.height) / 520 * pulse;
-  var sc3d  = Math.min(canvas.width, canvas.height) / 38;
-  var fov   = 280;
+  var rY   = autoRotY + manualRotY + mouseX * 0.2;
+  var rX   = manualRotX + mouseY * 0.1;
+  var cx   = canvas.width  / 2;
+  var cy   = canvas.height / 2;
+  var sc2d = Math.min(canvas.width, canvas.height) / 520 * pulseScale;
+  var sc3d = Math.min(canvas.width, canvas.height) / 38;
+  var fov  = 280;
 
-  // nền
-  ctx.fillStyle = '#060010';
+  // nền tối với trail nhẹ
+  ctx.fillStyle = 'rgba(6,0,16,0.82)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // ── Glow layers (không dùng shadowBlur — quá nặng trên iOS) ──
-  var glowColors = ['rgba(255,110,180,0.12)','rgba(200,80,192,0.08)','rgba(123,47,247,0.05)'];
+  // ── Glow outline layers ──
+  var glowColors = ['rgba(255,110,180,0.13)','rgba(200,80,192,0.09)','rgba(123,47,247,0.06)'];
   for (var layer = 1; layer <= 3; layer++) {
     buildHeartPath(cx, cy, sc2d * (1 + layer * 0.06));
     ctx.strokeStyle = glowColors[layer-1];
-    ctx.lineWidth   = 4 + layer * 3;
+    ctx.lineWidth   = 5 + layer * 3;
     ctx.stroke();
   }
 
-  // ── Filled heart ──
+  // ── Filled heart gradient ──
   buildHeartPath(cx, cy, sc2d);
-  ctx.fillStyle = 'rgba(215,55,155,0.10)';
+  var hg = ctx.createRadialGradient(cx, cy-20, 5, cx, cy, 160*sc2d);
+  hg.addColorStop(0,   'rgba(255,180,220,0.28)');
+  hg.addColorStop(0.5, 'rgba(215,55,155,0.16)');
+  hg.addColorStop(1,   'rgba(100,0,100,0.06)');
+  ctx.fillStyle = hg;
   ctx.fill();
 
-  // ── Outline ──
-  buildHeartPath(cx, cy, sc2d);
-  ctx.strokeStyle = '#ff4d94';
-  ctx.lineWidth   = 2.2;
-  ctx.stroke();
+  // ── Outline thay bằng border particles ──
+  for (var i = 0; i < borderParticles.length; i++) {
+    borderParticles[i].update();
+    borderParticles[i].draw(cx, cy, sc2d);
+  }
 
-  // ── Particles ──
+  // ── Pool A: bùng ra ngoài ──
+  var amtOut = (poolOutRate / 60) * 1.0;
+  for (var i = 0; i < amtOut; i++) {
+    var t   = Math.PI - 2 * Math.PI * Math.random();
+    var pos = heartXY(t);
+    var sc  = Math.min(canvas.width, canvas.height) / 520;
+    var px  = cx + pos.x * sc * pulseScale;
+    var py  = cy + pos.y * sc * pulseScale;
+    var len = Math.sqrt(pos.x*pos.x + pos.y*pos.y) || 1;
+    var spd = 180 * sc;
+    poolOut.add(px, py, (pos.x/len)*spd, -(pos.y/len)*spd);
+  }
+  poolOut.update(dtSec);
+  poolOut.draw(heartImgOut);
+
+  // ── Pool B: hút vào trong (effect -1.3) ──
+  var amtIn = (poolInRate / 60) * 0.8;
+  for (var i = 0; i < amtIn; i++) {
+    var t   = Math.PI - 2 * Math.PI * Math.random();
+    var pos = heartXY(t);
+    var sc  = Math.min(canvas.width, canvas.height) / 520;
+    var px  = cx + pos.x * sc * pulseScale;
+    var py  = cy + pos.y * sc * pulseScale;
+    var len = Math.sqrt(pos.x*pos.x + pos.y*pos.y) || 1;
+    var spd = 100 * sc;
+    poolIn.add(px, py, (pos.x/len)*spd, -(pos.y/len)*spd);
+  }
+  poolIn.update(dtSec);
+  poolIn.draw(heartImgIn);
+
+  // ── Ambient particles ──
   for (var i = 0; i < particles.length; i++) {
     particles[i].update();
     particles[i].draw();
@@ -306,19 +458,18 @@ function render(ts) {
   for (var i = 0; i < molecules.length; i++) {
     var mol = molecules[i];
     var wp  = mol.getPos(time);
-    var p   = { x: wp.x*pulse, y: wp.y*pulse, z: wp.z*pulse };
-    p = rotY(p, rY);
-    p = rotX(p, rX);
+    var p   = { x: wp.x*pulseScale, y: wp.y*pulseScale, z: wp.z*pulseScale };
+    p = rotY(p, rY); p = rotX(p, rX);
     var proj = project(p, cx, cy, sc3d, fov);
     projected.push({ mol: mol, proj: proj, z: p.z });
   }
   projected.sort(function(a,b){ return a.z - b.z; });
 
   for (var i = 0; i < projected.length; i++) {
-    var item  = projected[i];
-    var sx    = item.proj.sx, sy = item.proj.sy, f = item.proj.f;
+    var item = projected[i];
+    var sx = item.proj.sx, sy = item.proj.sy, f = item.proj.f;
     var depth = Math.max(0, Math.min(1, (f - 0.28) / 1.5));
-    var mol   = item.mol;
+    var mol = item.mol;
     mol.twinkle   += mol.twSpd;
     mol.spinAngle += mol.spinSpeed;
     var flicker   = 0.5 + 0.5 * Math.sin(mol.twinkle);
@@ -334,19 +485,13 @@ function render(ts) {
 window.addEventListener('resize', function() {
   resize();
   particles = [];
-  for (var i = 0; i < PCOUNT; i++) particles.push(new Particle());
+  for (var i = 0; i < PCOUNT; i++) particles.push(new AmbParticle());
 });
 
-window.addEventListener('load', function() {
-  initAll();
-  requestAnimationFrame(render);
-});
+function start() { initAll(); requestAnimationFrame(render); }
 
-// fallback nếu load đã fired
-if (document.readyState === 'complete') {
-  initAll();
-  requestAnimationFrame(render);
-}
+if (document.readyState === 'complete') { start(); }
+else { window.addEventListener('load', start); }
 </script>
 </body>
 </html>
